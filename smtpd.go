@@ -3,6 +3,7 @@ package smtpd
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ type Server struct {
 	// New e-mails are handed off to this function.
 	// Can be left empty for a NOOP server.
 	// If an error is returned, it will be reported in the SMTP session.
-	Handler func(peer Peer, env Envelope) error
+	Handler func(ctx context.Context, peer Peer, env Envelope) error
 
 	// Enable various checks during the SMTP session.
 	// Can be left empty for no restrictions.
@@ -55,10 +56,10 @@ type Server struct {
 
 	// mu guards doneChan and makes closing it and listener atomic from
 	// perspective of Serve()
-	mu sync.Mutex
-	doneChan chan struct{}
-	listener *net.Listener
-	waitgrp sync.WaitGroup
+	mu         sync.Mutex
+	doneChan   chan struct{}
+	listener   *net.Listener
+	waitgrp    sync.WaitGroup
 	inShutdown atomicBool // true when server is in shutdown
 }
 
@@ -98,7 +99,8 @@ func (e Error) Error() string { return fmt.Sprintf("%d %s", e.Code, e.Message) }
 var ErrServerClosed = errors.New("smtp: Server closed")
 
 type session struct {
-	server *Server
+	server  *Server
+	context context.Context
 
 	peer     Peer
 	envelope *Envelope
@@ -123,6 +125,7 @@ func (srv *Server) newSession(c net.Conn) (s *session) {
 			Addr:       c.RemoteAddr(),
 			ServerName: srv.Hostname,
 		},
+		context: context.Background(),
 	}
 
 	// Check if the underlying connection is already TLS.
@@ -228,7 +231,7 @@ func (srv *Server) Shutdown(wait bool) error {
 	// First close the listener
 	srv.mu.Lock()
 	if srv.listener != nil {
-		lnerr = (*srv.listener).Close();
+		lnerr = (*srv.listener).Close()
 	}
 	srv.closeDoneChanLocked()
 	srv.mu.Unlock()
@@ -254,7 +257,7 @@ func (srv *Server) Wait() error {
 
 // Address returns the listening address of the server
 func (srv *Server) Address() net.Addr {
-	return (*srv.listener).Addr();
+	return (*srv.listener).Addr()
 }
 
 func (srv *Server) configureDefaults() {
@@ -422,7 +425,7 @@ func (session *session) extensions() []string {
 
 func (session *session) deliver() error {
 	if session.server.Handler != nil {
-		return session.server.Handler(session.peer, *session.envelope)
+		return session.server.Handler(session.context, session.peer, *session.envelope)
 	}
 	return nil
 }
@@ -432,7 +435,6 @@ func (session *session) close() {
 	time.Sleep(200 * time.Millisecond)
 	session.conn.Close()
 }
-
 
 // From net/http/server.go
 
